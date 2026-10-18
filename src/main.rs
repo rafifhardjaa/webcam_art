@@ -1,48 +1,77 @@
 use crossterm::{
+    cursor,
     execute,
-    terminal::{Clear, ClearType},
+    terminal,
 };
 use opencv::{
+    core::Size,
     imgproc,
     prelude::*,
     videoio::{VideoCapture, CAP_ANY},
 };
 use std::{
-    io::{self, Write},
+    io::{self, BufWriter, Write},
     time::Duration,
 };
 
-const ASCII_CHARS: &[char] = &[' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
+const ASCII_CHARS: &[u8] = b" .,:;i1tfLCG08@";
 
-fn get_ascii_char(value: u8) -> char {
+fn brightness_to_char(value: u8) -> u8 {
     let index = (value as usize * (ASCII_CHARS.len() - 1)) / 255;
-
     ASCII_CHARS[index]
 }
 
-fn process_frame(frame: Mat) -> String {
-    let mut ascii_art = String::new();
+fn process_frame(frame: &Mat, cols: u16, rows: u16, output: &mut Vec<u8>) {
+    let target_w = cols as i32;
+    let target_h = rows as i32;
+
+    // Flip horizontal (1 = flip sumbu Y) untuk koreksi mirror webcam
+    let mut flipped = Mat::default();
+    opencv::core::flip(frame, &mut flipped, 1).unwrap();
+
     let mut gray = Mat::default();
+    imgproc::cvt_color(&flipped, &mut gray, imgproc::COLOR_BGR2GRAY, 0).unwrap();
 
-    imgproc::cvt_color(&frame, &mut gray, imgproc::COLOR_BGR2GRAY, 0).unwrap();
+    let mut resized = Mat::default();
+    imgproc::resize(
+        &gray,
+        &mut resized,
+        Size::new(target_w, target_h),
+        0.0,
+        0.0,
+        imgproc::INTER_AREA,
+    )
+    .unwrap();
 
-    let (rows, cols) = (gray.rows(), gray.cols());
+    let mut eq = Mat::default();
+    imgproc::equalize_hist(&resized, &mut eq).unwrap();
 
-    for y in (0..rows).step_by(6) {
-        for x in (0..cols).step_by(6) {
-            let pixel = gray.at_2d(y, x).unwrap();
-            ascii_art.push(get_ascii_char(*pixel));
+    output.clear();
+    output.reserve((target_w * target_h + target_h) as usize);
+
+    for y in 0..target_h {
+        for x in 0..target_w {
+            let lum: &u8 = eq.at_2d(y, x).unwrap();
+            output.push(brightness_to_char(*lum));
         }
-
-        ascii_art.push('\n');
+        if y < target_h - 1 {
+            output.push(b'\n');
+        }
     }
-
-    ascii_art
 }
 
 fn main() -> opencv::Result<()> {
     let mut camera = VideoCapture::new(0, CAP_ANY)?;
     let mut frame = Mat::default();
+
+    let stdout = io::stdout();
+    let mut out = BufWriter::with_capacity(1024 * 1024, stdout.lock());
+
+    // Reset terminal ke default, background hitam, foreground putih
+    out.write_all(b"\x1b[0m\x1b[2J\x1b[H").ok();
+    execute!(out, cursor::Hide).ok();
+
+    let mut pixel_buf: Vec<u8> = Vec::with_capacity(1024 * 1024);
 
     loop {
         camera.read(&mut frame)?;
@@ -51,25 +80,16 @@ fn main() -> opencv::Result<()> {
             continue;
         }
 
-        let ascii_art = process_frame(frame.clone());
+        let (term_cols, term_rows) = terminal::size().unwrap_or((80, 24));
+        let render_rows = term_rows.saturating_sub(1);
 
-        match execute!(io::stdout(), Clear(ClearType::All)) {
-            Ok(()) => {
-                print!("{}", ascii_art);
-                let _ = io::stdout().flush();
-            }
-            Err(e) => {
-                eprintln!("failed to clear temrinal: {}", e);
-                return Err(opencv::Error::new(
-                    opencv::core::StsError,
-                    "error clearing terminal",
-                ));
-            }
-        }
+        process_frame(&frame, term_cols, render_rows, &mut pixel_buf);
 
-        print!("{}", ascii_art);
-        let _ = io::stdout().flush();
+        // Kembali ke pojok kiri atas
+        out.write_all(b"\x1b[H").ok();
+        out.write_all(&pixel_buf).ok();
+        out.flush().ok();
 
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
