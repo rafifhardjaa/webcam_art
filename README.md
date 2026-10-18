@@ -48,6 +48,8 @@ Kemudian buat file `.cargo/config.toml` di root project:
 OpenCV_DIR = "/usr/local/lib/cmake/opencv4"
 ```
 
+> **Catatan:** file `.cargo/config.toml` bersifat lokal per-mesin dan **tidak ikut di-commit** (sudah masuk `.gitignore`), karena path di atas hanya valid untuk macOS Intel. Di Linux dan Apple Silicon biarkan crate `opencv` mendeteksi OpenCV sendiri.
+
 Juga perlu symlink libclang agar build script bisa berjalan:
 ```bash
 # Cek path llvm kamu dulu: brew list llvm
